@@ -11,6 +11,8 @@ import "math/big"
 type Clerk struct {
 	vs *viewservice.Clerk
 	// Your declarations here
+	view viewservice.View
+
 }
 
 // this may come in handy.
@@ -25,7 +27,7 @@ func MakeClerk(vshost string, me string) *Clerk {
 	ck := new(Clerk)
 	ck.vs = viewservice.MakeClerk(me, vshost)
 	// Your ck.* initializations here
-
+	ck.view,_ = ck.vs.Get()
 	return ck
 }
 
@@ -74,8 +76,24 @@ func call(srv string, rpcname string,
 func (ck *Clerk) Get(key string) string {
 
 	// Your code here.
+	var ok = false
+	args := &GetArgs{}
+	args.Key = key
 
-	return "???"
+	var reply GetReply
+	for {
+		ok = call(ck.view.Primary, "PBServer.Get", args, &reply)
+		if ok == true && reply.Err != ErrWrongServer {
+			break
+		}
+		var res = false
+		for res == false{
+			ck.view,res = ck.vs.Get()
+		}
+
+		// fmt.Println(res,ck.view)
+	}
+	return reply.Value
 }
 
 //
@@ -84,6 +102,22 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 	// Your code here.
+	args := &PutAppendArgs{}
+	args.Op = op
+	args.Key = key
+	args.Value = value
+	args.Id = nrand()
+	var reply PutAppendReply
+	for {
+		ok := call(ck.view.Primary, "PBServer.PutAppend", args, &reply)
+			// fmt.Println(ok,reply.Err)
+		if ok == true && reply.Err == OK {
+			return
+		}else{
+			ck.view,_ = ck.vs.Get()
+		}
+	//  fmt.Println(args)
+	}
 }
 
 //

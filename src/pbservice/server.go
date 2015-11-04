@@ -13,7 +13,6 @@ import "syscall"
 import "math/rand"
 
 
-
 type PBServer struct {
 	mu         sync.Mutex
 	l          net.Listener
@@ -22,22 +21,139 @@ type PBServer struct {
 	me         string
 	vs         *viewservice.Clerk
 	// Your declarations here.
+	view		 		viewservice.View
+	storage			map[string] string
+	record			map[int64] bool
+	// LB					int32
 }
 
 
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 
 	// Your code here.
+	//if I'm the primary
 
+	if pb.me == pb.view.Primary {
+		v, ok := pb.storage[args.Key]
+		if ok {
+			reply.Value = v
+			reply.Err = OK
+	//		fmt.Println(v)
+		}else{
+			reply.Err = ErrNoKey
+		}
+	}else {
+		reply.Err = ErrWrongServer
+	}
 	return nil
 }
 
+//Forward key value from primary to backup
+func (pb *PBServer)	Forward(args *ForwardArgs, reply *ForwardReply) error {
+	if pb.me == pb.view.Backup {
+		pb.mu.Lock()
+		// fmt.Println("Forward",pb.record[args.Id],args.Id)
+		if pb.record[args.Id] == true{
+			reply.Err = OK
+			pb.mu.Unlock()
+			return nil
+		}
+		pb.record[args.Id] = true
+		switch args.Op {
+		case Put:
+	//		fmt.Println(args.Key,args.Value)
+			pb.storage[args.Key] = args.Value
+			reply.Err = OK
+		case Append:
+			// fmt.Println("Forward",args.Key, "youren ",args.Value, "youren ", args.Id, pb.me)
+			pb.storage[args.Key] += args.Value
+			reply.Err = OK
+		}
+		// fmt.Println("forward-backup",pb.storage)
+		pb.mu.Unlock()
+	}
+	return nil
+}
+//handle of forward
+func (pb *PBServer) HandleForward(key string, value string, op string, id int64) {
+	args := &ForwardArgs{}
+	args.Op = op
+	args.Key = key
+	args.Value = value
+	args.Id = id
+	var reply PutAppendReply
+	// fmt.Println("forward-primary",pb.storage)
+	for {
+		ok := call(pb.view.Backup, "PBServer.Forward", args, &reply)
+		if ok == true && reply.Err == OK{
+			return
+		}
+		// fmt.Println("loop")
+	}
 
+}
+
+func (pb *PBServer) Dup(args *DupArgs, reply *DupReply) error {
+	if pb.me == pb.view.Backup {
+		pb.mu.Lock()
+		for key, value := range args.Storage{
+			pb.storage[key] = value
+		}
+		for key, value := range args.Record{
+			pb.record[key] = value
+		}
+		// fmt.Println("dup",pb.storage)
+		pb.mu.Unlock()
+		reply.Err = OK
+	}
+	return nil
+}
+func (pb *PBServer) HandleDup(des string) {
+	args := &DupArgs{}
+	args.Storage = pb.storage
+	args.Record = pb.record
+	var reply DupReply
+
+	ok := call(des, "PBServer.Dup", args, &reply)
+	if ok == true && reply.Err == OK {
+		return
+	}
+	// fmt.Println("\n\nDupdup",pb.storage, pb.view, ok)
+}
 func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 
 	// Your code here.
 
+	//Put should be handle by primary
+	if pb.me != pb.view.Primary {
+		reply.Err = ErrWrongServer
+		return nil
+	}
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	// fmt.Println("PutAppend",pb.record[args.Id],args.Id)
+	id := args.Id
+	if pb.record[id] == true {
+		reply.Err = OK
+		return nil
+	}
 
+	if pb.view.Backup != "" {
+		pb.HandleForward(args.Key, args.Value, args.Op, args.Id);
+	}
+	pb.record[id] = true
+	switch args.Op {
+	case Put:
+		// fmt.Println(args.Key,args.Value)
+		pb.storage[args.Key] = args.Value
+		reply.Err = OK
+	case Append:
+		// fmt.Println(args.Key, "youren ",args.Value, "youren ", args.Id, pb.me)
+		pb.storage[args.Key] += args.Value
+		reply.Err = OK
+	}
+
+	// fmt.Println(args.id,id)
 	return nil
 }
 
@@ -51,6 +167,20 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 func (pb *PBServer) tick() {
 
 	// Your code here.
+	vw,_ := pb.vs.Ping(pb.view.Viewnum)
+
+	//View changed
+	if pb.view.Viewnum != vw.Viewnum {
+		//I'm the new Backup now
+		// fmt.Println("view changed", vw, pb.view, pb.me)
+	 	if pb.me == vw.Primary {
+			if vw.Backup != pb.view.Backup && vw.Backup != "" {
+				pb.HandleDup(vw.Backup)
+			}
+		}
+		//when The backup or primary is ready, update view and receive request
+		pb.view = vw
+	}
 }
 
 // tell the server to shut itself down.
@@ -84,6 +214,11 @@ func StartServer(vshost string, me string) *PBServer {
 	pb.me = me
 	pb.vs = viewservice.MakeClerk(me, vshost)
 	// Your pb.* initializations here.
+	pb.storage = make(map[string] string)
+	pb.record  = make(map[int64] bool)
+	pb.view.Viewnum = 0
+	pb.view.Primary = ""
+	pb.view.Backup = ""
 
 	rpcs := rpc.NewServer()
 	rpcs.Register(pb)
