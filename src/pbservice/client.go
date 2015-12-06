@@ -2,10 +2,11 @@ package pbservice
 
 import "viewservice"
 import "net/rpc"
-import "fmt"
-
+// import "fmt"
+import "time"
 import "crypto/rand"
 import "math/big"
+
 
 
 type Clerk struct {
@@ -62,7 +63,7 @@ func call(srv string, rpcname string,
 		return true
 	}
 
-	fmt.Println(err)
+	// fmt.Println(err)
 	return false
 }
 
@@ -114,6 +115,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		if ok == true && reply.Err == OK {
 			return
 		}else{
+			time.Sleep(viewservice.PingInterval)
 			ck.view,_ = ck.vs.Get()
 		}
 	//  fmt.Println(args)

@@ -11,7 +11,7 @@ import "sync/atomic"
 import "os"
 import "syscall"
 import "math/rand"
-
+import "errors"
 
 type PBServer struct {
 	mu         sync.Mutex
@@ -50,18 +50,18 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 
 //Forward key value from primary to backup
 func (pb *PBServer)	Forward(args *ForwardArgs, reply *ForwardReply) error {
+	// fmt.Println("Forward",pb.view.Backup, pb.me)
 	if pb.me == pb.view.Backup {
 		pb.mu.Lock()
-		// fmt.Println("Forward",pb.record[args.Id],args.Id)
-		if pb.record[args.Id] == true{
+		if pb.record[args.Id] == true && args.Op == Append{
 			reply.Err = OK
 			pb.mu.Unlock()
 			return nil
 		}
-		pb.record[args.Id] = true
+
 		switch args.Op {
 		case Put:
-	//		fmt.Println(args.Key,args.Value)
+		// fmt.Println("Forward",args.Key, "youren ",args.Value, "youren ", args.Id, pb.me)
 			pb.storage[args.Key] = args.Value
 			reply.Err = OK
 		case Append:
@@ -69,28 +69,29 @@ func (pb *PBServer)	Forward(args *ForwardArgs, reply *ForwardReply) error {
 			pb.storage[args.Key] += args.Value
 			reply.Err = OK
 		}
+		pb.record[args.Id] = true
 		// fmt.Println("forward-backup",pb.storage)
 		pb.mu.Unlock()
 	}
 	return nil
 }
 //handle of forward
-func (pb *PBServer) HandleForward(key string, value string, op string, id int64) {
+func (pb *PBServer) HandleForward(key string, value string, op string, id int64)error {
 	args := &ForwardArgs{}
 	args.Op = op
 	args.Key = key
 	args.Value = value
 	args.Id = id
 	var reply PutAppendReply
-	// fmt.Println("forward-primary",pb.storage)
-	for {
-		ok := call(pb.view.Backup, "PBServer.Forward", args, &reply)
-		if ok == true && reply.Err == OK{
-			return
-		}
-		// fmt.Println("loop")
-	}
 
+	// fmt.Println("forward-primary",pb.storage)
+	ok := call(pb.view.Backup, "PBServer.Forward", args, &reply)
+	if ok == true && reply.Err == OK{
+		return nil
+	}else {
+		// fmt.Println(args.Key)
+		return errors.New("Forward error")
+	}
 }
 
 func (pb *PBServer) Dup(args *DupArgs, reply *DupReply) error {
@@ -102,36 +103,41 @@ func (pb *PBServer) Dup(args *DupArgs, reply *DupReply) error {
 		for key, value := range args.Record{
 			pb.record[key] = value
 		}
-		// fmt.Println("dup",pb.storage)
+		//  fmt.Println("dup",pb.storage,pb.me)
 		pb.mu.Unlock()
 		reply.Err = OK
 	}
 	return nil
 }
-func (pb *PBServer) HandleDup(des string) {
+func (pb *PBServer) HandleDup(des string) error{
 	args := &DupArgs{}
 	args.Storage = pb.storage
 	args.Record = pb.record
 	var reply DupReply
+	// pb.mu.Lock()
+	// defer pb.mu.Unlock()
+	//	fmt.Println("dup-first",pb.storage)
+	//Sleep for a while or else will failed
+	time.Sleep(viewservice.PingInterval)
 
 	ok := call(des, "PBServer.Dup", args, &reply)
 	if ok == true && reply.Err == OK {
-		return
+		return nil
 	}
-	// fmt.Println("\n\nDupdup",pb.storage, pb.view, ok)
+	return errors.New("Dup error")
 }
 func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 
 	// Your code here.
 
-	//Put should be handle by primary
+	//Put should be handle by primaryk
 	if pb.me != pb.view.Primary {
 		reply.Err = ErrWrongServer
 		return nil
 	}
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
-	// fmt.Println("PutAppend",pb.record[args.Id],args.Id)
+	//  fmt.Println("PutAppend",args.Key, args.Value)
 	id := args.Id
 	if pb.record[id] == true {
 		reply.Err = OK
@@ -139,12 +145,16 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 	}
 
 	if pb.view.Backup != "" {
-		pb.HandleForward(args.Key, args.Value, args.Op, args.Id);
+		err := pb.HandleForward(args.Key, args.Value, args.Op, args.Id);
+		if err != nil{
+			reply.Err = ErrWrongServer;
+			return errors.New("forward error")
+		}
 	}
-	pb.record[id] = true
+
 	switch args.Op {
 	case Put:
-		// fmt.Println(args.Key,args.Value)
+		// fmt.Println("Put",args.Key,args.Value,pb.view.Backup)
 		pb.storage[args.Key] = args.Value
 		reply.Err = OK
 	case Append:
@@ -152,7 +162,7 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 		pb.storage[args.Key] += args.Value
 		reply.Err = OK
 	}
-
+	pb.record[id] = true
 	// fmt.Println(args.id,id)
 	return nil
 }
@@ -168,7 +178,8 @@ func (pb *PBServer) tick() {
 
 	// Your code here.
 	vw,_ := pb.vs.Ping(pb.view.Viewnum)
-
+pb.mu.Lock()
+defer pb.mu.Unlock()
 	//View changed
 	if pb.view.Viewnum != vw.Viewnum {
 		//I'm the new Backup now
