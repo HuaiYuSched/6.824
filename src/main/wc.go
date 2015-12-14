@@ -15,15 +15,19 @@ import "container/list"
 func Map(value string) *list.List {
 
 	l := list.New()
+	//split string with whitespace
 	for _,word := range strings.Fields(value) {
-		if !isChar(word[0]) {
-			continue;
-		}
+	//if one sub string begin with a symbol but not a char,
+	//it must not be a word.
+//		if !isChar(word[0]) {
+//			continue;
+//		}
 		l.PushBack(mapreduce.KeyValue{word,"1"})
 	}
 	return l
 }
 
+//determind whether a byte is a character or not.
 func isChar(ch byte) bool{
 	if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
 		return true

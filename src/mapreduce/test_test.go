@@ -61,6 +61,10 @@ func check(t *testing.T, file string) {
 	}
 
 	sort.Strings(lines)
+	// sortfile,err := os.Create("sortline")
+	// for _,line := range lines {
+	// 	sortfile.WriteString(line+"\n")
+	// }
 
 	outputScanner := bufio.NewScanner(output)
 	i := 0

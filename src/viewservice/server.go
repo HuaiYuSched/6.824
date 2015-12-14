@@ -18,6 +18,13 @@ type ViewServer struct {
 
 
 	// Your declarations here.
+	View		View
+	time map[string] time.Time
+	//Current view's state is confirmed by primary or not
+	// times map[sting] int
+	acked 	bool
+	//idlechan
+	idlechan chan string
 }
 
 //
@@ -26,7 +33,58 @@ type ViewServer struct {
 func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 
 	// Your code here.
-
+	vs.mu.Lock();
+	vs.time[args.Me] = time.Now()
+	if vs.View.Viewnum == 0 {
+		vs.View.Primary = args.Me
+		vs.View.Viewnum ++
+		vs.acked = false
+		// vs.time[args.Me] = time.Now()
+		reply.View = vs.View
+//		fmt.Println("get in");
+//		fmt.Println(reply.View.Primary)
+		vs.mu.Unlock();
+		return nil
+	}
+//according to the name of server, determine the procedure.
+	switch args.Me{
+//The primary send Ping again, so make the acked as true
+	case vs.View.Primary:
+		//if the viewnum of ping is equal to the number of vs, then ack
+		if vs.View.Viewnum == args.Viewnum {
+			vs.acked = true
+		//if the number of ping is zero, means the primary is failed
+		}else if args.Viewnum == 0 {
+			vs.View.Primary = vs.View.Backup
+			vs.View.Backup = args.Me
+			vs.View.Viewnum ++
+			vs.acked = false
+		}
+		reply.View = vs.View
+		vs.mu.Unlock();
+		return nil
+	case vs.View.Backup:
+		reply.View = vs.View
+		vs.mu.Unlock();
+		return nil
+//Not primary or backup -- idle server
+	default:
+		//If there is still no backup
+		if vs.View.Backup == ""{
+			if vs.acked == true{
+				vs.View.Viewnum ++
+				vs.View.Backup = args.Me
+				vs.acked = false
+				vs.time[args.Me] = time.Now()
+			}
+			reply.View=vs.View
+			vs.mu.Unlock();
+			return nil
+		}else{		//idle server wait for machine failed
+			vs.mu.Unlock();	//unlock to allowed others ping
+			vs.idlechan <- args.Me	// send self to idlechan and wait receiving
+		}
+	}
 	return nil
 }
 
@@ -36,7 +94,7 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 
 	// Your code here.
-
+	reply.View = vs.View
 	return nil
 }
 
@@ -49,6 +107,36 @@ func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 func (vs *ViewServer) tick() {
 
 	// Your code here.
+	//check the time of primary and backup, if recently no activity, replace them
+	// fmt.Println(time.Since(vs.time[vs.View.Primary]),DeadPings * PingInterval, vs.acked)
+
+	if vs.View.Primary != ""{
+		if time.Since(vs.time[vs.View.Primary]) > DeadPings * PingInterval && vs.acked == true{
+			delete(vs.time, vs.View.Primary)
+			vs.View.Primary = vs.View.Backup
+			select {
+			case  idleserver := <- vs.idlechan :
+					vs.View.Backup = idleserver
+			default :
+					vs.View.Backup = ""
+			}
+			vs.View.Viewnum ++
+			vs.acked = false
+		}
+	}
+	if vs.View.Backup != "" {
+		if time.Since(vs.time[vs.View.Backup]) > DeadPings * PingInterval {	//why do not need arcked?
+			delete(vs.time, vs.View.Backup)
+			select {
+			case  idleserver := <- vs.idlechan :
+					vs.View.Backup = idleserver
+			default :
+					vs.View.Backup = ""
+			}
+			vs.View.Viewnum ++
+			vs.acked = false
+		}
+	}
 }
 
 //
@@ -77,6 +165,12 @@ func StartServer(me string) *ViewServer {
 	vs := new(ViewServer)
 	vs.me = me
 	// Your vs.* initializations here.
+	vs.View.Viewnum = 0;
+	vs.time = make(map[string] time.Time)
+	vs.View.Primary = ""
+	vs.View.Backup = ""
+	vs.idlechan = make(chan string)
+	// vs.acked = false
 
 	// tell net/rpc about our RPC server and handlers.
 	rpcs := rpc.NewServer()
